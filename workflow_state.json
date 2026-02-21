@@ -5,7 +5,13 @@
       "name": "Elevra Concierge Agent",
       "type": "single",
       "has_tools": true,
-      "tools": ["GOOGLECALENDAR_FIND_FREE_SLOTS", "GOOGLECALENDAR_CREATE_EVENT", "GMAIL_SEND_EMAIL"]
+      "has_voice": true,
+      "tools": ["GOOGLECALENDAR_FIND_FREE_SLOTS", "GOOGLECALENDAR_CREATE_EVENT", "GMAIL_SEND_EMAIL"],
+      "voice_config": {
+        "provider": "openai",
+        "model": "gpt-4o-mini-realtime-preview",
+        "voice": "shimmer"
+      }
     }
   }
 }

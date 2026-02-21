@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
+import { ScrollArea } from '@/components/ui/scroll-area'
 
 import {
   RiSendPlaneFill,
@@ -36,7 +37,13 @@ import {
   RiArrowRightLine,
   RiCheckDoubleLine,
   RiSparklingLine,
-  RiTargetLine
+  RiTargetLine,
+  RiMicLine,
+  RiMicOffLine,
+  RiPhoneFill,
+  RiPhoneOffLine,
+  RiVoiceprintLine,
+  RiLoader4Line
 } from 'react-icons/ri'
 
 // --- Constants ---
@@ -87,6 +94,12 @@ interface StoredLead {
   booking_data: BookingData | null
   current_step: string
   created_at: string
+}
+
+interface VoiceTranscriptEntry {
+  role: 'user' | 'agent'
+  text: string
+  id: string
 }
 
 // --- Sample Data ---
@@ -1002,6 +1015,513 @@ function AdminDashboard({ sampleMode }: { sampleMode: boolean }) {
   )
 }
 
+// --- Voice Chat ---
+function VoiceChat() {
+  const [voiceStatus, setVoiceStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
+  const [transcript, setTranscript] = useState<VoiceTranscriptEntry[]>([])
+  const [isAgentSpeaking, setIsAgentSpeaking] = useState(false)
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false)
+  const [thinkingText, setThinkingText] = useState('')
+  const [errorMessage, setErrorMessage] = useState('')
+  const [callDuration, setCallDuration] = useState(0)
+  const [isMuted, setIsMuted] = useState(false)
+
+  const wsRef = useRef<WebSocket | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const nextPlayTimeRef = useRef(0)
+  const sampleRateRef = useRef(24000)
+  const silentGainRef = useRef<GainNode | null>(null)
+  const playbackGainRef = useRef<GainNode | null>(null)
+  const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const isMutedRef = useRef(false)
+  const voiceStatusRef = useRef<'idle' | 'connecting' | 'connected' | 'error'>('idle')
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    isMutedRef.current = isMuted
+  }, [isMuted])
+
+  useEffect(() => {
+    voiceStatusRef.current = voiceStatus
+  }, [voiceStatus])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      disconnectVoice()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Duration timer
+  useEffect(() => {
+    if (voiceStatus === 'connected') {
+      setCallDuration(0)
+      durationIntervalRef.current = setInterval(() => {
+        setCallDuration(prev => prev + 1)
+      }, 1000)
+    } else {
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current)
+        durationIntervalRef.current = null
+      }
+    }
+    return () => {
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current)
+      }
+    }
+  }, [voiceStatus])
+
+  // Auto-scroll transcript
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [transcript, thinkingText])
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const base64ToFloat32 = (base64: string): Float32Array => {
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+    const int16 = new Int16Array(bytes.buffer)
+    const float32 = new Float32Array(int16.length)
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768
+    }
+    return float32
+  }
+
+  const playAudioChunk = (base64Audio: string) => {
+    if (!audioContextRef.current) return
+    const ctx = audioContextRef.current
+    const float32 = base64ToFloat32(base64Audio)
+    const buffer = ctx.createBuffer(1, float32.length, sampleRateRef.current)
+    buffer.getChannelData(0).set(float32)
+
+    const source = ctx.createBufferSource()
+    source.buffer = buffer
+
+    // Create playback gain node if not exists (gain = 1.0 for audible playback)
+    if (!playbackGainRef.current) {
+      playbackGainRef.current = ctx.createGain()
+      playbackGainRef.current.gain.value = 1.0
+      playbackGainRef.current.connect(ctx.destination)
+    }
+    source.connect(playbackGainRef.current)
+
+    // Schedule sequentially to prevent overlapping garbled speech
+    const now = ctx.currentTime
+    const startTime = Math.max(now, nextPlayTimeRef.current)
+    source.start(startTime)
+    nextPlayTimeRef.current = startTime + buffer.duration
+
+    setIsAgentSpeaking(true)
+    source.onended = () => {
+      if (ctx.currentTime >= nextPlayTimeRef.current - 0.05) {
+        setIsAgentSpeaking(false)
+      }
+    }
+  }
+
+  const connectVoice = async () => {
+    try {
+      setVoiceStatus('connecting')
+      setErrorMessage('')
+      setTranscript([])
+      setThinkingText('')
+      setCallDuration(0)
+
+      // 1. Start session
+      const sessionRes = await fetch('https://voice-sip.studio.lyzr.ai/session/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: AGENT_ID })
+      })
+
+      if (!sessionRes.ok) {
+        throw new Error('Failed to start voice session')
+      }
+
+      const sessionData = await sessionRes.json()
+      const wsUrl = sessionData.wsUrl
+      sampleRateRef.current = sessionData.audioConfig?.sampleRate || 24000
+
+      // 2. Get microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: sampleRateRef.current,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      })
+      streamRef.current = stream
+
+      // 3. Create AudioContext
+      const audioCtx = new AudioContext({ sampleRate: sampleRateRef.current })
+      audioContextRef.current = audioCtx
+      nextPlayTimeRef.current = 0
+
+      // 4. Set up mic processing with ScriptProcessor
+      const micSource = audioCtx.createMediaStreamSource(stream)
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+      processorRef.current = processor
+
+      // Connect processor to a SILENT gain node (gain.value = 0) -- NOT to audioContext.destination
+      // This prevents echoing mic audio back to speakers
+      const silentNode = audioCtx.createGain()
+      silentNode.gain.value = 0
+      silentNode.connect(audioCtx.destination)
+      silentGainRef.current = silentNode
+
+      micSource.connect(processor)
+      processor.connect(silentNode) // processor needs an output connection to work
+
+      // 5. Connect WebSocket to the wsUrl from the session
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        setVoiceStatus('connected')
+      }
+
+      processor.onaudioprocess = (e) => {
+        if (ws.readyState !== WebSocket.OPEN) return
+
+        const inputData = e.inputBuffer.getChannelData(0)
+
+        // Detect user speaking via RMS
+        let sum = 0
+        for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i]
+        const rms = Math.sqrt(sum / inputData.length)
+        setIsUserSpeaking(rms > 0.01)
+
+        // If muted, send silence (use ref for closure)
+        if (isMutedRef.current) return
+
+        // Convert Float32 to PCM16
+        const pcm16 = new Int16Array(inputData.length)
+        for (let i = 0; i < inputData.length; i++) {
+          const s = Math.max(-1, Math.min(1, inputData[i]))
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+        }
+
+        // Convert to base64
+        const uint8 = new Uint8Array(pcm16.buffer)
+        let binaryStr = ''
+        for (let i = 0; i < uint8.length; i++) {
+          binaryStr += String.fromCharCode(uint8[i])
+        }
+        const base64 = btoa(binaryStr)
+
+        ws.send(JSON.stringify({
+          type: 'audio',
+          audio: base64,
+          sampleRate: sampleRateRef.current
+        }))
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data)
+
+          if (msg.type === 'audio' && msg.audio) {
+            playAudioChunk(msg.audio)
+          } else if (msg.type === 'transcript') {
+            const role = msg.role === 'user' ? 'user' as const : 'agent' as const
+            setTranscript(prev => [...prev, { role, text: msg.text || msg.content || '', id: generateUUID() }])
+            if (role === 'agent') {
+              setThinkingText('')
+            }
+          } else if (msg.type === 'thinking') {
+            setThinkingText(msg.text || msg.content || 'Processing...')
+          } else if (msg.type === 'clear') {
+            // Agent interrupted -- clear queued audio
+            nextPlayTimeRef.current = 0
+            setIsAgentSpeaking(false)
+          } else if (msg.type === 'error') {
+            setErrorMessage(msg.message || msg.text || 'Voice error occurred')
+          }
+        } catch {
+          // Non-JSON message, ignore
+        }
+      }
+
+      ws.onerror = () => {
+        setErrorMessage('Voice connection error')
+        setVoiceStatus('error')
+      }
+
+      ws.onclose = () => {
+        if (voiceStatusRef.current !== 'idle') {
+          setVoiceStatus('idle')
+        }
+      }
+
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to connect'
+      setErrorMessage(message)
+      setVoiceStatus('error')
+      disconnectVoice()
+    }
+  }
+
+  const disconnectVoice = () => {
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+    if (processorRef.current) {
+      processorRef.current.disconnect()
+      processorRef.current = null
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close()
+      audioContextRef.current = null
+    }
+    silentGainRef.current = null
+    playbackGainRef.current = null
+    nextPlayTimeRef.current = 0
+    setVoiceStatus('idle')
+    setIsAgentSpeaking(false)
+    setIsUserSpeaking(false)
+    setThinkingText('')
+  }
+
+  const toggleMute = () => {
+    setIsMuted(prev => !prev)
+  }
+
+  const isIdle = voiceStatus === 'idle'
+  const isConnecting = voiceStatus === 'connecting'
+  const isConnected = voiceStatus === 'connected'
+  const isError = voiceStatus === 'error'
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Voice Header */}
+      <div className="px-6 py-6 text-center border-b border-border bg-card flex-shrink-0">
+        <h2 className="font-serif text-2xl font-light tracking-widest text-foreground uppercase mb-1">Elevra Studio</h2>
+        <p className="text-xs tracking-[0.25em] uppercase text-muted-foreground font-sans font-light">Voice Concierge</p>
+        <Separator className="max-w-[80px] mx-auto mt-4" />
+      </div>
+
+      {/* Main Voice Area */}
+      <div className="flex-1 overflow-y-auto flex flex-col items-center">
+        {/* Call Button Area */}
+        <div className="flex flex-col items-center justify-center py-10 px-6 flex-shrink-0">
+          {/* Status Label */}
+          <p className="text-[10px] tracking-[0.3em] uppercase text-muted-foreground font-sans mb-6">
+            {isIdle && 'Ready to Connect'}
+            {isConnecting && 'Establishing Connection...'}
+            {isConnected && 'Live Session'}
+            {isError && 'Connection Error'}
+          </p>
+
+          {/* Call Button with Pulse Rings */}
+          <div className="relative flex items-center justify-center mb-6">
+            {/* Outer pulse rings when connected */}
+            {isConnected && isAgentSpeaking && (
+              <>
+                <div className="absolute w-40 h-40 rounded-full border border-primary/20 animate-ping" />
+                <div className="absolute w-36 h-36 rounded-full border border-primary/10 animate-pulse" />
+              </>
+            )}
+            {isConnected && isUserSpeaking && !isMuted && (
+              <>
+                <div className="absolute w-40 h-40 rounded-full border border-green-400/20 animate-ping" />
+                <div className="absolute w-36 h-36 rounded-full border border-green-400/10 animate-pulse" />
+              </>
+            )}
+            {isConnecting && (
+              <div className="absolute w-36 h-36 rounded-full border border-primary/20 animate-pulse" />
+            )}
+
+            {/* Main Circle Button */}
+            <button
+              onClick={isConnected ? disconnectVoice : (isIdle || isError) ? connectVoice : undefined}
+              disabled={isConnecting}
+              className={cn(
+                'relative w-32 h-32 rounded-full flex items-center justify-center transition-all duration-300 focus:outline-none',
+                isIdle && 'border border-primary/40 bg-card hover:border-primary/80 hover:shadow-lg hover:shadow-primary/10',
+                isConnecting && 'border border-primary/30 bg-card cursor-wait',
+                isConnected && 'border-2 border-green-500/60 bg-card hover:border-red-400/60',
+                isError && 'border border-destructive/40 bg-card hover:border-destructive/80'
+              )}
+            >
+              {isIdle && <RiMicLine className="w-10 h-10 text-primary/70" />}
+              {isConnecting && <RiLoader4Line className="w-10 h-10 text-primary/70 animate-spin" />}
+              {isConnected && !isMuted && <RiVoiceprintLine className="w-10 h-10 text-green-500" />}
+              {isConnected && isMuted && <RiMicOffLine className="w-10 h-10 text-muted-foreground" />}
+              {isError && <RiPhoneOffLine className="w-10 h-10 text-destructive/70" />}
+            </button>
+          </div>
+
+          {/* Duration / CTA */}
+          {isIdle && (
+            <p className="text-xs tracking-widest uppercase text-muted-foreground font-sans font-light">Tap to Connect</p>
+          )}
+          {isConnecting && (
+            <p className="text-xs tracking-widest uppercase text-muted-foreground font-sans font-light animate-pulse">Connecting...</p>
+          )}
+          {isConnected && (
+            <div className="flex flex-col items-center gap-3">
+              <p className="text-lg font-mono font-light tracking-widest text-foreground">{formatDuration(callDuration)}</p>
+              <div className="flex items-center gap-3">
+                {/* Mute Toggle */}
+                <button
+                  onClick={toggleMute}
+                  className={cn(
+                    'w-10 h-10 rounded-full flex items-center justify-center border transition-all duration-200',
+                    isMuted
+                      ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                      : 'border-border bg-muted text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {isMuted ? <RiMicOffLine className="w-4 h-4" /> : <RiMicLine className="w-4 h-4" />}
+                </button>
+
+                {/* End Call */}
+                <button
+                  onClick={disconnectVoice}
+                  className="w-10 h-10 rounded-full flex items-center justify-center border border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20 transition-all duration-200"
+                >
+                  <RiPhoneOffLine className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
+          {isError && (
+            <div className="text-center">
+              <p className="text-xs tracking-wider text-destructive font-sans mb-2">{errorMessage || 'Connection failed'}</p>
+              <p className="text-xs tracking-widest uppercase text-muted-foreground font-sans font-light">Tap to Retry</p>
+            </div>
+          )}
+
+          {/* Thinking Text */}
+          {thinkingText && isConnected && (
+            <div className="mt-4 px-4 py-2 border border-border bg-muted/50 max-w-sm">
+              <p className="text-xs text-muted-foreground tracking-wider font-light animate-pulse">{thinkingText}</p>
+            </div>
+          )}
+
+          {/* Speaking Indicators */}
+          {isConnected && (
+            <div className="flex items-center gap-6 mt-4">
+              <div className="flex items-center gap-2">
+                <div className={cn('w-2 h-2 rounded-full transition-colors duration-200', isUserSpeaking && !isMuted ? 'bg-green-500' : 'bg-muted-foreground/20')} />
+                <span className="text-[10px] tracking-widest uppercase text-muted-foreground font-sans">You</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className={cn('w-2 h-2 rounded-full transition-colors duration-200', isAgentSpeaking ? 'bg-primary animate-pulse' : 'bg-muted-foreground/20')} />
+                <span className="text-[10px] tracking-widest uppercase text-muted-foreground font-sans">Agent</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Transcript Area */}
+        {transcript.length > 0 && (
+          <div className="w-full border-t border-border flex-shrink-0">
+            <div className="px-4 py-3 bg-muted/30 border-b border-border">
+              <p className="text-[10px] tracking-widest uppercase text-muted-foreground font-sans">Live Transcript</p>
+            </div>
+            <div ref={scrollRef} className="max-h-64 overflow-y-auto px-4 py-3 space-y-3">
+              {transcript.map((entry) => (
+                <div key={entry.id} className={cn('flex', entry.role === 'user' ? 'justify-end' : 'justify-start')}>
+                  {entry.role === 'agent' && (
+                    <div className="flex items-start gap-2 max-w-[85%]">
+                      <div className="w-6 h-6 border border-border flex items-center justify-center bg-muted flex-shrink-0 mt-0.5">
+                        <RiSparklingLine className="w-3 h-3 text-primary" />
+                      </div>
+                      <div className="px-3 py-2 bg-muted border border-border">
+                        <p className="text-sm text-foreground leading-relaxed font-light tracking-wide">{entry.text}</p>
+                      </div>
+                    </div>
+                  )}
+                  {entry.role === 'user' && (
+                    <div className="max-w-[85%]">
+                      <div className="px-3 py-2 bg-primary text-primary-foreground">
+                        <p className="text-sm leading-relaxed font-light tracking-wide">{entry.text}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {thinkingText && (
+                <div className="flex justify-start">
+                  <div className="flex items-start gap-2">
+                    <div className="w-6 h-6 border border-border flex items-center justify-center bg-muted flex-shrink-0">
+                      <RiSparklingLine className="w-3 h-3 text-primary" />
+                    </div>
+                    <div className="flex items-center gap-1.5 px-3 py-2 bg-muted border border-border">
+                      <span className="w-1.5 h-1.5 bg-muted-foreground/60 rounded-full animate-bounce" />
+                      <span className="w-1.5 h-1.5 bg-muted-foreground/60 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
+                      <span className="w-1.5 h-1.5 bg-muted-foreground/60 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Empty State Instructions */}
+        {transcript.length === 0 && isIdle && (
+          <div className="px-6 pb-8 text-center">
+            <Separator className="max-w-[60px] mx-auto mb-6" />
+            <p className="text-sm text-muted-foreground tracking-wider font-light leading-relaxed max-w-sm mx-auto">
+              Speak directly with our concierge to discuss your project, schedule a consultation, or get instant answers.
+            </p>
+            <div className="flex items-center justify-center gap-6 mt-6">
+              <div className="text-center">
+                <RiVoiceprintLine className="w-5 h-5 text-muted-foreground/40 mx-auto mb-1.5" />
+                <p className="text-[10px] tracking-widest uppercase text-muted-foreground/60 font-sans">Real-time</p>
+              </div>
+              <div className="text-center">
+                <RiMicLine className="w-5 h-5 text-muted-foreground/40 mx-auto mb-1.5" />
+                <p className="text-[10px] tracking-widest uppercase text-muted-foreground/60 font-sans">Natural Voice</p>
+              </div>
+              <div className="text-center">
+                <RiSparklingLine className="w-5 h-5 text-muted-foreground/40 mx-auto mb-1.5" />
+                <p className="text-[10px] tracking-widest uppercase text-muted-foreground/60 font-sans">AI Powered</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Agent Status */}
+      <div className="flex items-center gap-2 px-4 py-2 border-t border-border bg-muted/50 flex-shrink-0">
+        <div className={cn('w-2 h-2 rounded-full', isConnected ? 'bg-green-500 animate-pulse' : isConnecting ? 'bg-primary animate-pulse' : 'bg-muted-foreground/30')} />
+        <span className="text-[10px] tracking-widest uppercase text-muted-foreground font-sans">
+          {isConnected ? 'Voice Session Active' : isConnecting ? 'Connecting...' : 'Elevra Voice Concierge'}
+        </span>
+        <span className="text-[10px] text-muted-foreground/60 ml-auto font-mono">
+          {AGENT_ID.slice(0, 8)}...
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // --- Error Boundary ---
 class PageErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -1061,6 +1581,13 @@ export default function Page() {
                   Chat
                 </TabsTrigger>
                 <TabsTrigger
+                  value="voice"
+                  className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-4 py-3.5 text-xs tracking-widest uppercase font-sans font-light text-muted-foreground data-[state=active]:text-foreground transition-none"
+                >
+                  <RiVoiceprintLine className="w-3.5 h-3.5 mr-2" />
+                  Voice
+                </TabsTrigger>
+                <TabsTrigger
                   value="admin"
                   className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-4 py-3.5 text-xs tracking-widest uppercase font-sans font-light text-muted-foreground data-[state=active]:text-foreground transition-none"
                 >
@@ -1086,6 +1613,12 @@ export default function Page() {
           <TabsContent value="chat" className="flex-1 m-0 overflow-hidden">
             <div className="h-full max-w-3xl mx-auto w-full flex flex-col border-x border-border bg-card">
               <ClientChat sampleMode={sampleMode} />
+            </div>
+          </TabsContent>
+
+          <TabsContent value="voice" className="flex-1 m-0 overflow-hidden">
+            <div className="h-full max-w-3xl mx-auto w-full flex flex-col border-x border-border bg-card">
+              <VoiceChat />
             </div>
           </TabsContent>
 
