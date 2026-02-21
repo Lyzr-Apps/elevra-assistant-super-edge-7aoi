@@ -15,7 +15,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
-import { ScrollArea } from '@/components/ui/scroll-area'
 
 import {
   RiSendPlaneFill,
@@ -37,11 +36,11 @@ import {
   RiArrowRightLine,
   RiCheckDoubleLine,
   RiSparklingLine,
-  RiTargetLine,
+  RiFocusLine,
   RiMicLine,
   RiMicOffLine,
   RiPhoneFill,
-  RiPhoneOffLine,
+  RiShutDownLine,
   RiVoiceprintLine,
   RiLoader4Line
 } from 'react-icons/ri'
@@ -343,7 +342,7 @@ function LeadSummaryCard({ leadData, onConfirm, onEdit, disabled }: {
     { icon: RiUser3Line, label: 'Full Name', value: leadData?.full_name },
     { icon: RiBriefcaseLine, label: 'Business', value: leadData?.business_name },
     { icon: RiSparklingLine, label: 'Service', value: leadData?.service_type },
-    { icon: RiTargetLine, label: 'Goal', value: leadData?.project_goal },
+    { icon: RiFocusLine, label: 'Goal', value: leadData?.project_goal },
     { icon: RiMoneyDollarCircleLine, label: 'Budget', value: leadData?.budget },
     { icon: RiTimeLine, label: 'Timeline', value: leadData?.timeline },
     { icon: RiMailLine, label: 'Email', value: leadData?.email },
@@ -1370,7 +1369,7 @@ function VoiceChat() {
               {isConnecting && <RiLoader4Line className="w-10 h-10 text-primary/70 animate-spin" />}
               {isConnected && !isMuted && <RiVoiceprintLine className="w-10 h-10 text-green-500" />}
               {isConnected && isMuted && <RiMicOffLine className="w-10 h-10 text-muted-foreground" />}
-              {isError && <RiPhoneOffLine className="w-10 h-10 text-destructive/70" />}
+              {isError && <RiShutDownLine className="w-10 h-10 text-destructive/70" />}
             </button>
           </div>
 
@@ -1403,7 +1402,7 @@ function VoiceChat() {
                   onClick={disconnectVoice}
                   className="w-10 h-10 rounded-full flex items-center justify-center border border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20 transition-all duration-200"
                 >
-                  <RiPhoneOffLine className="w-4 h-4" />
+                  <RiShutDownLine className="w-4 h-4" />
                 </button>
               </div>
             </div>
