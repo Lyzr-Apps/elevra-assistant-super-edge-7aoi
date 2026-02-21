@@ -1,0 +1,11 @@
+{
+  "agents": {
+    "elevra_concierge": {
+      "agent_id": "699979073f15947a386b5c97",
+      "name": "Elevra Concierge Agent",
+      "type": "single",
+      "has_tools": true,
+      "tools": ["GOOGLECALENDAR_FIND_FREE_SLOTS", "GOOGLECALENDAR_CREATE_EVENT", "GMAIL_SEND_EMAIL"]
+    }
+  }
+}

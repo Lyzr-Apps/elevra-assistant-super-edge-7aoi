@@ -1,0 +1,54 @@
+{
+  "type": "json_schema",
+  "json_schema": {
+    "name": "ElevraConciergeResponse",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "The agent's conversational response to the client"
+        },
+        "lead_data": {
+          "type": ["object", "null"],
+          "description": "Collected lead information, null if not yet complete",
+          "properties": {
+            "full_name": { "type": "string" },
+            "business_name": { "type": "string" },
+            "service_type": { "type": "string" },
+            "project_goal": { "type": "string" },
+            "budget": { "type": "string" },
+            "timeline": { "type": "string" },
+            "email": { "type": "string" },
+            "phone": { "type": "string" }
+          },
+          "required": ["full_name", "business_name", "service_type", "project_goal", "budget", "timeline", "email", "phone"],
+          "additionalProperties": false
+        },
+        "booking_data": {
+          "type": ["object", "null"],
+          "description": "Booking information, null if no booking made",
+          "properties": {
+            "date": { "type": "string" },
+            "time": { "type": "string" },
+            "timezone": { "type": "string" },
+            "status": { "type": "string" }
+          },
+          "required": ["date", "time", "timezone", "status"],
+          "additionalProperties": false
+        },
+        "current_step": {
+          "type": "string",
+          "description": "Current step in the flow: greeting, collecting_name, collecting_business, collecting_service, collecting_goal, collecting_budget, collecting_timeline, collecting_email, collecting_phone, showing_summary, confirmed, offering_booking, booking_in_progress, booking_confirmed, completed"
+        },
+        "action_taken": {
+          "type": ["string", "null"],
+          "description": "Description of any tool action taken in this turn, null if none"
+        }
+      },
+      "required": ["message", "lead_data", "booking_data", "current_step", "action_taken"],
+      "additionalProperties": false
+    }
+  }
+}

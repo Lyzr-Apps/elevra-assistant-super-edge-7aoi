@@ -1,0 +1,32 @@
+{
+  "nodes": [
+    {
+      "id": "input_node",
+      "type": "Input",
+      "label": "Client Message",
+      "nodeCategory": "input"
+    },
+    {
+      "id": "elevra_concierge",
+      "type": "Agent",
+      "label": "Elevra Concierge Agent",
+      "nodeCategory": "agent"
+    },
+    {
+      "id": "output_node",
+      "type": "Output",
+      "label": "Agent Response",
+      "nodeCategory": "end"
+    }
+  ],
+  "edges": [
+    {
+      "source": "input_node",
+      "target": "elevra_concierge"
+    },
+    {
+      "source": "elevra_concierge",
+      "target": "output_node"
+    }
+  ]
+}

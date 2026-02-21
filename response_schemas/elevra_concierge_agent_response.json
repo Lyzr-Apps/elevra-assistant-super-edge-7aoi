@@ -1,0 +1,30 @@
+{
+  "agent_name": "Elevra Concierge Agent",
+  "agent_id": "699979073f15947a386b5c97",
+  "description": "Manages the full client engagement flow for Elevra Studio, a premium digital creative agency based in Nepal. Greets visitors in Elevra Studio's premium tone, collects lead information step-by-step, saves records, checks calendar availability, creates consultation events, and sends confirmation emails.",
+  "agent_type": "json",
+  "accessor": "result",
+  "auto_generated": true,
+  "response_schema": {
+    "message": "string",
+    "lead_data": "string",
+    "booking_data": "string",
+    "current_step": "string",
+    "action_taken": "string"
+  },
+  "example_response": {
+    "message": "The agent's conversational response to the client",
+    "lead_data": "sample",
+    "booking_data": "sample",
+    "current_step": "Current step in the flow: greeting, collecting_name, collecting_business, collecting_service, collecting_goal, collecting_budget, collecting_timeline, collecting_email, collecting_phone, showing_summary, confirmed, offering_booking, booking_in_progress, booking_confirmed, completed",
+    "action_taken": "sample"
+  },
+  "has_module_outputs": true,
+  "module_outputs_example": {
+    "artifact_files": [
+      {
+        "file_url": "https://example.com/image.png"
+      }
+    ]
+  }
+}
